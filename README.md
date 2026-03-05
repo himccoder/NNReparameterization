@@ -1,349 +1,197 @@
 # Structural Optimization: Why Do Neural Networks Work?
 
-A research experiment that systematically pulls apart *why* neural networks improve
-structural optimization — isolating the optimizer, the architecture, and the network's
-built-in spatial biases one piece at a time.
+A systematic ablation study that isolates *which part* of neural reparameterization
+actually drives improvement in structural optimization — the optimizer, the smoothing,
+or the CNN's spatial inductive bias.
 
 ---
 
 ## Table of Contents
 
-1. [What is structural optimization?](#what-is-structural-optimization)
+1. [Background](#background)
 2. [The central question](#the-central-question)
-3. [Glossary of technical terms](#glossary-of-technical-terms)
-4. [How we measure success](#how-we-measure-success)
-5. [Background and motivation](#background-and-motivation)
-6. [The 12 experiment conditions](#the-12-experiment-conditions)
-7. [The 6 hypotheses being tested](#the-6-hypotheses-being-tested)
-8. [Problem types](#problem-types)
-9. [Project structure](#project-structure)
-10. [How to run](#how-to-run)
-11. [Reading the results](#reading-the-results)
-12. [References](#references)
+3. [Key concepts](#key-concepts)
+4. [How we evaluate](#how-we-evaluate)
+5. [Hypotheses](#hypotheses)
+6. [Experiment conditions](#experiment-conditions)
+7. [Problem types](#problem-types)
+8. [Project structure](#project-structure)
+9. [How to run](#how-to-run)
+10. [Reading the results](#reading-the-results)
+11. [References](#references)
 
 ---
 
-## What is structural optimization?
+## Background
 
-Imagine you are an engineer who must design a bridge, and you have a fixed amount of
-steel. Your goal is to place that steel as efficiently as possible so the bridge is as
-stiff and strong as it can be, while using only the material budget you have.
+**Structural optimization** (specifically topology optimization) is the problem of
+deciding where to place material in a 2D grid to build the stiffest possible structure
+under a fixed material budget. Every cell in the grid gets a density value between 0
+(empty) and 1 (solid). The algorithm's job is to find the density assignment that
+minimizes **compliance** — the elastic potential energy stored in the structure when
+forces are applied. Lower compliance = stiffer structure = better design.
 
-Structural optimization is the computer science version of that problem. The computer
-is given:
+The classical pipeline:
 
-- a rectangular grid of cells (think of it as a blank canvas),
-- boundary conditions (where the structure is fixed to the ground),
-- applied loads (where forces push or pull on the structure), and
-- a material budget (what fraction of cells can be filled).
+```
+x (density grid)  →  FEM solver  →  compliance  →  MMA update  →  repeat
+```
 
-The algorithm then decides for every cell: *should this cell be solid material or empty
-space?* The best answer is the one where the finished structure bends the least when
-forces are applied.
+`x` is optimized directly. **MMA** (Method of Moving Asymptotes, Svanberg 1987) is a
+specialized gradient-based solver designed for this class of problems. It is the
+industry standard.
 
-**Compliance** is the number that measures how much the structure bends. A lower
-compliance means a stiffer, more efficient structure. It is the single most important
-number in this experiment — lower is always better.
+Hoyer et al. (2019) proposed replacing direct density optimization with a CNN
+**reparameterization**:
+
+```
+z (latent code)  →  CNN(z)  →  x (density grid)  →  FEM solver  →  compliance  →  Adam update
+```
+
+Instead of optimizing the density grid `x` directly, you optimize a compact latent
+input `z` and pass it through a CNN to produce `x`. The CNN acts as a learned or
+structural prior over designs. They showed this significantly reduces compliance on
+several benchmark problems — but did not isolate *why*.
 
 ---
 
 ## The central question
 
-In 2019, researchers (Hoyer et al.) showed that replacing the classical structural
-optimization solver with a neural network produced significantly better designs. The
-neural network acts as a filter: instead of directly deciding material placement, the
-algorithm optimizes a compact internal code and feeds it through the network, which
-produces the final design.
+Three competing explanations could account for the improvement:
 
-This raised an obvious but unanswered question:
+1. **Optimizer effect** — Adam may just be a better optimizer than MMA for this
+   problem, independently of the neural network.
+2. **Smoothing effect** — The CNN implicitly smooths the density field, preventing
+   noisy intermediate designs. A simple Gaussian filter on direct density might do
+   the same thing.
+3. **Architectural prior** — The CNN's convolutional structure encodes a spatial
+   inductive bias that steers optimization toward better regions of the design space,
+   and this bias is the actual driver.
 
-> **What part of the neural network setup is actually responsible for the improvement?**
-> Is it the network's internal structure? The optimizer used to train it? The way it
-> smooths the design? Something else entirely?
-
-This codebase runs 12 carefully designed experiments across 3 different structural
-problems to find out.
-
----
-
-## Glossary of technical terms
-
-### Compliance
-A number measuring how much a structure deforms under load. Think of it as
-"structural sloppiness" — lower compliance means a stiffer, better design. Every
-experiment is trying to minimize compliance.
-
-### MMA — Method of Moving Asymptotes
-The classical, industry-standard algorithm for structural optimization. It was
-designed specifically for this type of problem and has been the gold standard since
-1987. It works by carefully restricting how much the design can change at each step,
-using mathematical bounds (the "asymptotes"). Conditions A, C, D, and J use MMA.
-
-### Adam
-A popular optimizer from the deep learning world. Instead of using specialized
-structural knowledge like MMA does, Adam simply follows the gradient (the direction
-of improvement) while automatically adjusting its step size for each parameter. It was
-not designed for structural optimization — it is a general-purpose learning algorithm.
-Most neural-network conditions (B, E, F, G, H, I, K, L) use Adam.
-
-### L-BFGS
-A sophisticated mathematical optimizer that builds up a memory of past gradients to
-make better update steps. It is more powerful than plain gradient descent but requires
-more memory. Condition C uses L-BFGS to test whether a high-quality classical
-optimizer alone can match neural network performance.
-
-### MLP — Multi-Layer Perceptron
-The simplest kind of neural network: a stack of layers where each neuron connects to
-every neuron in the next layer. An MLP with 3 layers and 64 neurons per layer takes
-in a position (x, y coordinates of a cell) and outputs a density value for that cell.
-MLPs have no built-in sense of space — they treat each position independently.
-Conditions E and F use MLPs.
-
-### CNN — Convolutional Neural Network
-A neural network with a fundamentally different structure. Instead of each neuron
-connecting to every other neuron, a CNN applies small sliding filters (convolutions)
-across the entire grid. This gives the CNN a built-in awareness of local spatial
-patterns — neighbouring cells naturally influence each other. This is called a
-**spatial inductive bias**: the architecture is hardwired to pay attention to nearby
-structure. Conditions I, J, K, and L use CNNs.
-
-### U-Net (skip connections / multi-scale prior)
-A specific CNN architecture shaped like the letter U. It first compresses the design
-down to a small, abstract representation (the encoder), then expands it back up to
-full size (the decoder). Crucially, it adds "skip connections" — direct shortcuts
-that pass fine-grained detail from the encoder directly to the decoder.
-
-The result is that the network sees the design at multiple scales simultaneously:
-broad, structural patterns *and* fine local details at the same time. This is called
-a **multi-scale prior** or **spatial/multi-scale prior** — the architecture is
-pre-wired to combine coarse and fine spatial information. Condition K removes the skip
-connections to test whether this multi-scale capability is the key ingredient.
-
-### SIREN — Sinusoidal Representation Network
-An MLP where every neuron uses a sine wave activation function instead of the typical
-ReLU. Sine activations give the network a strong preference for representing smooth,
-wave-like patterns at many frequencies. In other words, SIREN has a natural "frequency
-prior" — it encodes designs in terms of overlapping waves rather than step functions.
-Condition H uses SIREN.
-
-### Fourier MLP
-An MLP that first transforms the input coordinates using a bank of sine and cosine
-functions at many different frequencies (a Fourier feature encoding). This pre-bakes a
-frequency bias into the inputs before the MLP even processes them, mimicking one
-aspect of SIREN without changing the network internals. Condition G uses a Fourier MLP.
-
-### Spatial prior / inductive bias
-A prior is anything that constrains the search before the optimization begins.
-A **spatial prior** is a constraint that comes from the shape or structure of the
-network itself: it makes certain types of solutions (e.g. smooth, locally consistent
-designs) much easier for the network to express than others (e.g. random, noisy
-designs). The CNN's convolutional structure is its spatial prior. The experiment asks:
-is this prior the key reason CNNs work better, or is something else going on?
-
-### Frozen weights
-In condition L, the CNN's internal parameters (the filter weights) are randomly
-initialised and then *never updated*. Only the input code is optimized. The CNN is
-used purely as a fixed, random mathematical transformation. If this still beats the
-classical method, it means the CNN's architecture alone — not anything it learned —
-is responsible for the improvement.
-
-### Parameterization
-A mathematical choice about *what you optimize*. In the direct approach you optimize
-the density of every cell directly. In the neural network approach you optimize a
-compact latent code and use the network to translate it into densities. The network is
-the parameterization. A good parameterization can make the optimization landscape
-smoother and easier to navigate.
-
-### Latent code
-A small vector of numbers that acts as the "seed" fed into the neural network. The
-optimization algorithm adjusts this seed, and the network converts it into a full
-design. It is called "latent" because the actual design is hidden inside the network's
-transformation of this code.
+These have different implications. If it's (1), you don't need a neural network at
+all. If it's (2), a filter is enough. Only if it's (3) does the architecture itself
+deserve credit. This experiment disentangles them.
 
 ---
 
-## How we measure success
+## Key concepts
 
-Every experiment produces the same core measurements:
+**Compliance** — The scalar objective being minimized. Formally, `C = u^T K u` where
+`u` is the displacement vector and `K` is the global stiffness matrix assembled by
+FEM. Lower is better.
 
-| Metric | What it means | Better = |
-|--------|---------------|----------|
-| **Final compliance** | Stiffness of the finished design | Lower |
-| **Compliance at step 20/40/80** | How fast the design improves | Lower, faster drop |
-| **Topology sparsity** | Fraction of cells that are clearly solid or clearly empty | Higher (crisp design) |
-| **Wall-clock time** | How long the run took in seconds | Lower |
+**MMA (Method of Moving Asymptotes)** — A classical constrained optimizer tailored
+for topology optimization. Uses first-order gradient information but restricts each
+update via per-variable asymptotes to ensure stable convergence. The baseline solver.
 
-The **hypothesis matrix plot** (`results/plots/hypothesis_matrix.png`) is the key
-figure. It shows at a glance which conditions beat the baseline and by how much.
+**Adam** — Standard deep learning optimizer. No structural-optimization-specific
+knowledge. Used here both as a standalone optimizer (on direct density) and to train
+the neural parameterizations.
 
----
+**L-BFGS** — A quasi-Newton method that builds an approximation to the Hessian from
+recent gradients. More powerful than first-order methods; included to test whether any
+strong general optimizer matches CNN performance.
 
-## Background and motivation
+**Parameterization** — The choice of what variables to optimize and how they map to
+the density field. Direct parameterization optimizes `x` directly. Neural
+parameterizations optimize a latent `z` and use a network `f: z → x`.
 
-### Why would a neural network help here?
+**Spatial inductive bias** — A CNN's convolutional layers enforce local spatial
+correlations: each output value depends only on a local receptive field of the input.
+This makes it structurally easier for the network to produce spatially smooth, locally
+coherent designs — which happen to be the kind that structural optimizers converge to.
 
-Classical structural optimization (MMA) works directly in the space of all possible
-density grids. This space is enormous and full of local traps — small basins where
-the algorithm gets stuck. The classical approach uses mathematical constraints to
-navigate this landscape carefully.
+**Multi-scale prior (U-Net / skip connections)** — The CNN used here is U-Net style:
+an encoder compresses the latent code down to a small bottleneck, then a decoder
+expands it back to full resolution. Skip connections between encoder and decoder layers
+pass fine-scale spatial detail across at every resolution. The result is a network
+with simultaneous awareness of coarse global structure and fine local detail. Condition
+K ablates this by removing the skip connections.
 
-Neural networks change the search space. Instead of searching over raw density grids,
-you search over the network's internal codes. Because the network maps these codes to
-designs in a smooth, structured way, the resulting optimization landscape can be much
-easier to navigate. This is the "reparameterization" idea.
+**SIREN (Sinusoidal Representation Network)** — An implicit neural network where every
+activation function is `sin(ωx)` instead of ReLU. The periodic activations give SIREN
+a strong spectral bias toward smooth, band-limited signals. Used here as an alternative
+frequency-prior architecture without any convolution.
 
-### Why is this experiment important?
+**Fourier MLP** — A standard MLP preceded by a positional encoding layer that maps
+input coordinates `(x, y)` to a stack of `sin` and `cos` features at many frequencies
+(Tancik et al., 2020). Like SIREN, this imposes a frequency prior on the design, but
+without sinusoidal activations throughout.
 
-Hoyer et al. showed the approach works but did not rigorously isolate *which part*
-drives the improvement. Three competing explanations are plausible:
-
-1. **The optimizer**: Adam may simply be better than MMA for this task.
-2. **Smoothing**: The network may act as an implicit smoother, preventing noisy designs.
-3. **The architecture**: The CNN's spatial structure may encode useful priors about
-   what good structural designs look like.
-
-These explanations have different implications. If it is just the optimizer, you do not
-need neural networks at all — just swap MMA for Adam. If it is smoothing, a simple
-Gaussian filter might be enough. Only if it is the architecture does the neural network
-itself deserve credit.
-
-Understanding which explanation is correct matters for:
-- deciding when to use neural methods in new engineering problems,
-- designing better architectures for structural optimization,
-- understanding why "deep image priors" (random CNNs used as image generators) work at
-  all — a broader open question in machine learning.
-
----
-
-## The 12 experiment conditions
-
-Each condition is one specific combination of *how the design is represented* (the
-parameterization) and *how it is optimized* (the optimizer). Think of each condition
-as one competing approach to the same problem.
-
-| Label | In plain English | Parameterization | Optimizer | Tests |
-|-------|-----------------|-----------------|-----------|-------|
-| **A** | Classical approach. No neural network. | Direct density | MMA | Baseline |
-| **B** | Classical design, modern optimizer. | Direct density | Adam | Is Adam alone better than MMA? |
-| **C** | Classical design, powerful math optimizer. | Direct density | L-BFGS | Is any good optimizer sufficient? |
-| **D** | Classical design with heavy blurring. | Direct + strong blur | MMA | Does smoothing alone explain gains? |
-| **E** | Simplest neural network. | Small MLP (3 layers) | Adam | Does any NN help, or only CNNs? |
-| **F** | Deeper neural network, still no spatial awareness. | Deep MLP (8 layers) | Adam | Does more depth (without spatial bias) help? |
-| **G** | MLP that sees the design as waves. | MLP + Fourier encoding | Adam | Can wave-based encoding replace convolution? |
-| **H** | Wave-based network throughout. | SIREN | Adam | Strong frequency prior without convolution. |
-| **I** | Full CNN — the method from the paper. | U-Net CNN | Adam | The paper's claimed best approach. |
-| **J** | CNN with classical optimizer. | U-Net CNN | MMA | Does CNN prior help even without Adam? |
-| **K** | CNN without the multi-scale shortcuts. | CNN, no skip connections | Adam | Are skip connections necessary inside the CNN? |
-| **L** | CNN with completely frozen random weights. | Frozen U-Net CNN | Adam | Does the CNN's *shape alone* explain gains? |
-
-**Condition L is the most important experiment.** The CNN's weights are never
-updated — they stay at their random initial values. If this still beats condition A,
-the CNN architecture's spatial structure alone is responsible for the improvement,
-completely independent of any learning.
+**Frozen weights (Condition L)** — The CNN's weights are randomly initialized and
+never updated. Only the latent input `z` is optimized. This tests whether the CNN
+architecture's structural prior is sufficient on its own — i.e., whether it is an
+untrained, fixed spatial filter that still shapes the optimization landscape favorably.
+This is the most important condition in the experiment.
 
 ---
 
-## The 6 hypotheses being tested
+## How we evaluate
 
-### H1 — It is specifically the CNN's spatial structure
-*"CNNs outperform MLPs because of their built-in spatial awareness, not just because
-they are neural networks."*
+Every run records:
 
-Relevant comparisons: I vs E and F (CNN vs plain MLP), J vs A (CNN + MMA vs direct
-+ MMA).
+| Metric | Definition | Goal |
+|--------|-----------|------|
+| **Final compliance** | `C = u^T K u` at the last optimization step | Minimize |
+| **Compliance @ step 20/40/80** | Convergence speed profile | Lower, faster |
+| **Topology sparsity** | Fraction of cells with density > 0.5 | Higher = crisper design |
+| **Wall-clock time (s)** | Total runtime of the run | Lower |
 
-**Why it matters:** If H1 is confirmed, architecture design is what counts. Engineers
-should specifically choose spatially-aware architectures for structural tasks.
-
----
-
-### H2 — It is just smoothing
-*"The CNN is acting as a spatial smoother. A simple Gaussian blur applied to direct
-density achieves the same effect."*
-
-Relevant comparison: D vs A (blurred direct vs classical baseline).
-
-**Why it matters:** If H2 is confirmed, you do not need neural networks at all — just
-add a filter. This would mean the entire neural reparameterization literature is
-solving a much simpler problem than it appears.
+All conditions are run with the same material volume fraction constraint and the same
+number of FEM evaluations (normalized across optimizers). Comparisons are made on
+final compliance as the primary metric.
 
 ---
 
-### H3 — It is the optimizer (Adam vs MMA)
-*"Adam is simply a better optimizer than MMA for this type of problem. The neural
-network is incidental."*
+## Hypotheses
 
-Relevant comparisons: B vs A (Adam on direct density vs MMA on direct density).
+| ID | Claim | Confirmed if |
+|----|-------|-------------|
+| **H1** | It's the CNN's spatial/multi-scale prior | CNN (I) beats MLP (E/F) of equal capacity; CNN + MMA (J) also beats direct + MMA (A) |
+| **H2** | It's implicit smoothing | Heavily filtered direct density (D) matches CNN (I) |
+| **H3** | It's the optimizer | Adam on direct density (B) matches Adam + CNN (I) |
+| **H4** | It's implicit regularization / early stopping | Compliance curves show CNN's lead shrinks as MMA runs longer |
+| **H5** | It's frequency bias, not convolution | Fourier MLP (G) or SIREN (H) matches CNN (I) |
+| **H6** | The architectural prior alone is sufficient | Frozen-weight CNN (L) beats classical baseline (A) |
 
-**Why it matters:** If H3 is confirmed, the research community should focus on
-optimizer improvements rather than network architecture. The neural network is just
-a vehicle for using Adam.
-
----
-
-### H4 — It is implicit regularization / early stopping
-*"Neural networks implicitly regularize the solution. The improvement comes from
-stopping the optimization before the design overfits to noise."*
-
-Relevant comparison: compliance curves over time — does the CNN's advantage disappear
-if MMA is run for many more steps?
-
-**Why it matters:** If H4 is confirmed, classical methods can match neural ones simply
-by tuning their convergence criteria.
+**H6 is the "killer experiment."** If a randomly initialized, weight-frozen CNN
+outperforms direct density + MMA, then no learning is needed — the architectural
+prior itself restructures the optimization landscape. This connects directly to the
+"deep image prior" phenomenon (Ulyanov et al., 2018), where random CNNs act as
+surprisingly effective image priors.
 
 ---
 
-### H5 — It is frequency bias, not convolution
-*"The CNN works because it produces designs with the right frequency content (smooth
-at large scales, detailed at small scales). You can achieve the same with SIREN or
-Fourier MLPs without any convolution."*
+## Experiment conditions
 
-Relevant comparisons: G vs I (Fourier MLP vs CNN), H vs I (SIREN vs CNN).
+12 conditions formed by crossing parameterizations with optimizers:
 
-**Why it matters:** If H5 is confirmed, convolution is not the key ingredient — any
-architecture with the right frequency bias would work. This has broad implications for
-implicit neural representation research.
-
----
-
-### H6 — The structural prior alone explains everything (the "killer experiment")
-*"The CNN with completely frozen random weights still outperforms direct
-parameterization. No learning is needed — the architecture's spatial shape is a
-sufficient prior for finding good designs."*
-
-Relevant comparison: L vs A (frozen CNN vs classical baseline).
-
-**Why it matters:** This is the most striking possible outcome. It would mean that
-the convolution operation itself, applied to any reasonable random weights, imposes a
-bias on the design space that happens to align with what good structural designs look
-like. This would explain why "deep image prior" methods work across many domains —
-not just structural optimization.
+| Label | Parameterization | Architecture | Optimizer | Tests |
+|-------|-----------------|-------------|-----------|-------|
+| A | Direct density | — | MMA | Classical baseline |
+| B | Direct density | — | Adam | H3: optimizer effect |
+| C | Direct density | — | L-BFGS | H3: stronger optimizer |
+| D | Direct + Gaussian filter (width=3) | — | MMA | H2: smoothing effect |
+| E | MLP | 3 layers, 64 hidden, ReLU | Adam | H1: any NN vs CNN |
+| F | MLP | 8 layers, 64 hidden, ReLU | Adam | H1: depth without spatial bias |
+| G | MLP + Fourier encoding | 4 layers, ReLU, 32 frequencies | Adam | H5: frequency prior without conv |
+| H | SIREN | 4 layers, sin activations, ω=30 | Adam | H5: periodic prior without conv |
+| I | CNN (U-Net) | Encoder-decoder + skip connections | Adam | Reference: Hoyer et al. method |
+| J | CNN (U-Net) | Encoder-decoder + skip connections | MMA | H1/H3: CNN prior + classical optimizer |
+| K | CNN (no skip) | Encoder-decoder, no shortcuts | Adam | H1: is multi-scale structure necessary? |
+| L | CNN (frozen) | U-Net, weights fixed at init | Adam | **H6: architectural prior only** |
 
 ---
 
 ## Problem types
 
-Each condition is run on three engineering problems of increasing complexity:
+Three benchmark problems of increasing difficulty, each run with all 12 conditions:
 
-### MBB Beam (80 × 25 grid)
-The standard benchmark in structural optimization. A horizontal beam is fixed at both
-ends and a downward force is applied at the centre. The algorithm must find the
-most efficient truss-like structure to carry this load. Fast to run and easy to
-interpret visually.
-
-### Multistory Building (64 × 128 grid)
-A tall vertical structure with loads applied at each floor level. This is the problem
-where Hoyer et al. claimed the largest improvement from neural reparameterization. The
-tall, narrow aspect ratio and multiple load points make it structurally more complex
-than the beam.
-
-### Causeway Bridge (96 × 96 grid)
-A bridge structure with distributed loads along a deck and supports at the sides.
-The arch-like geometry and unusual support conditions make this a harder optimization
-problem with more potential for local traps.
-
-Running all 12 conditions on all 3 problems gives **36 total runs** (or fewer if using
-`--skip_existing`).
+| Problem | Grid | Vol. fraction | Description |
+|---------|------|--------------|-------------|
+| **MBB Beam** | 80 × 25 | 0.40 | Standard cantilever beam benchmark. Fixed at both ends, point load at centre. Fast convergence, easy to compare visually. |
+| **Multistory Building** | 64 × 128 | 0.20 | Tall structure with distributed floor loads. Hoyer et al. report the largest gains here. Tall aspect ratio makes multi-scale structure more important. |
+| **Causeway Bridge** | 96 × 96 | 0.08 | Arch-type bridge with distributed deck load. Low volume fraction makes the problem harder — less material, more complex load paths. |
 
 ---
 
@@ -351,70 +199,56 @@ Running all 12 conditions on all 3 problems gives **36 total runs** (or fewer if
 
 ```
 NNReparametrizationResearch/
-├── README.md                   ← This file
-├── run_experiment.py           ← Main entry point: runs all conditions
+├── run_experiment.py           ← Main entry point
 ├── config.py                   ← All hyperparameters and condition definitions
 │
-├── physics/                    ← Physical simulation
-│   ├── fem.py                  ← Finite element solver (stiffness matrix, displacements)
-│   ├── objective.py            ← Compliance calculation + gradients
-│   └── problems.py             ← Problem setup: beam, bridge, building
+├── physics/
+│   ├── fem.py                  ← FEM solver: stiffness matrix assembly, displacement solve
+│   ├── objective.py            ← Compliance + autograd-compatible gradient computation
+│   └── problems.py             ← Problem setup: boundary conditions, loads, grids
 │
-├── parameterizations/          ← How the design is represented
-│   ├── direct.py               ← Conditions A/B/C/D: raw density grid
-│   ├── mlp.py                  ← Conditions E/F: plain neural networks
-│   ├── fourier_mlp.py          ← Condition G: MLP with wave-encoded inputs; Condition H: SIREN
-│   └── cnn.py                  ← Conditions I/J/K/L: convolutional networks
+├── parameterizations/
+│   ├── direct.py               ← Conditions A/B/C/D
+│   ├── mlp.py                  ← Conditions E/F
+│   ├── fourier_mlp.py          ← Condition G (Fourier MLP) and H (SIREN)
+│   └── cnn.py                  ← Conditions I/J/K/L
 │
-├── optimizers/                 ← How the design is improved step by step
-│   ├── mma_optimizer.py        ← Classical structural optimizer (MMA)
-│   └── gradient_optimizer.py   ← Deep learning optimizers (Adam, L-BFGS)
+├── optimizers/
+│   ├── mma_optimizer.py        ← MMA via NLopt
+│   └── gradient_optimizer.py   ← Adam and L-BFGS via PyTorch
 │
-├── analysis/                   ← Measuring and visualizing results
-│   ├── metrics.py              ← Compliance, sparsity, timing, CSV output
-│   └── visualize.py            ← Convergence curves, design images, hypothesis matrix
+├── analysis/
+│   ├── metrics.py              ← Metric collection, JSON logging, CSV aggregation
+│   └── visualize.py            ← Convergence curves, design grids, hypothesis matrix
 │
-└── results/                    ← Created when you run the experiment
-    ├── logs/                   ← One JSON file per run
-    ├── plots/                  ← Convergence curves and final design images
-    └── summary.csv             ← All results in one table
+└── results/
+    ├── logs/                   ← Per-run JSON: all metrics and compliance history
+    ├── plots/                  ← Convergence curves, design images, hypothesis matrix
+    └── summary.csv             ← Aggregated results table
 ```
 
 ---
 
 ## How to run
 
-### 1. Install dependencies
 ```bash
+# Install dependencies
 pip install numpy scipy autograd nlopt torch torchvision matplotlib pandas scikit-image
-```
 
-### 2. Run the full experiment (all 36 conditions × problems)
-```bash
+# Full experiment (all 36 runs)
 python run_experiment.py
-```
 
-### 3. Run a specific condition on a specific problem
-```bash
+# Single condition + problem
 python run_experiment.py --condition I --problem mbb_beam
-```
-Valid condition labels: A B C D E F G H I J K L  
-Valid problem names: `mbb_beam`, `multistory_building`, `causeway_bridge`
 
-### 4. Quick smoke test (small grid, few steps — good for checking everything works)
-```bash
-$env:PYTHONUTF8=1; python run_experiment.py --smoke_test
-```
-(The `PYTHONUTF8=1` is only needed on Windows to handle Unicode characters in the
-terminal output.)
+# Quick smoke test (tiny grid, 5 steps — just verifies nothing is broken)
+python run_experiment.py --smoke_test       # Linux/macOS
+$env:PYTHONUTF8=1; python run_experiment.py --smoke_test   # Windows
 
-### 5. Skip runs that already have saved results
-```bash
+# Resume: skip runs that already have saved results
 python run_experiment.py --skip_existing
-```
 
-### 6. Regenerate plots from existing results
-```bash
+# Regenerate plots from existing logs
 python analysis/visualize.py --results_dir results/
 ```
 
@@ -422,26 +256,24 @@ python analysis/visualize.py --results_dir results/
 
 ## Reading the results
 
-After running, the key outputs are:
+### Key comparisons (priority order)
 
-| File | What to look for |
-|------|-----------------|
-| `results/summary.csv` | Full table of all conditions × problems × metrics |
-| `results/plots/hypothesis_matrix.png` | The main figure — which conditions beat baseline and by how much |
-| `results/plots/convergence_*.png` | How quickly each condition improves over optimization steps |
-| `results/plots/designs_*.png` | The final material layout for every condition |
+| Comparison | Hypothesis | What a large gap means |
+|------------|-----------|------------------------|
+| L vs A | H6 | Architectural prior alone is the driver |
+| I vs E, F | H1 | CNN specifically (not just any NN) is needed |
+| B vs A | H3 | Optimizer is the driver |
+| D vs A | H2 | Smoothing is the driver |
+| G/H vs I | H5 | Frequency prior replicates CNN without convolution |
+| J vs A | H1 | CNN prior helps even with MMA |
+| K vs I | H1 | Multi-scale skip connections are necessary within CNN |
 
-### Key comparisons to read first
+### Output files
 
-| Compare | The question it answers |
-|---------|------------------------|
-| **L vs A** | Does the CNN's shape alone explain gains? *(H6 — the killer experiment)* |
-| **I vs E / F** | Is CNN specifically better, or does any neural network help? *(H1)* |
-| **B vs A** | Is Adam alone (no neural network) sufficient? *(H3)* |
-| **D vs A** | Is smoothing alone sufficient? *(H2)* |
-| **G vs I** | Can frequency encoding replace convolution? *(H5)* |
-| **I vs J** | Does the CNN need Adam, or does it work with MMA too? *(H1/H3)* |
-| **K vs I** | Do skip connections (multi-scale structure) matter inside the CNN? *(H1)* |
+- `results/summary.csv` — full results table
+- `results/plots/hypothesis_matrix.png` — the key comparison figure
+- `results/plots/convergence_*.png` — compliance curves per problem
+- `results/plots/designs_*.png` — final density maps for all conditions
 
 ---
 
@@ -449,7 +281,7 @@ After running, the key outputs are:
 
 - Hoyer et al. (2019). *Neural Reparameterization Improves Structural Optimization.*
 - Andreassen et al. (2010). *Efficient topology optimization in MATLAB using 88 lines of code.*
-- Svanberg (1987). *The method of moving asymptotes — a new class of globally convergent approximation schemes.*
+- Svanberg (1987). *The method of moving asymptotes.*
 - Ulyanov et al. (2018). *Deep Image Prior.*
 - Tancik et al. (2020). *Fourier Features Let Networks Learn High Frequency Functions.*
 - Sitzmann et al. (2020). *Implicit Neural Representations with Periodic Activation Functions (SIREN).*
