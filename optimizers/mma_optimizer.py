@@ -85,19 +85,19 @@ def run_mma(parameterization, args, opt_steps=80, print_every=10, checkpoints=No
             else:
                 value = func(x)
 
-            if losses_list is not None:
+            if losses_list is not None: # If the losses list is not None then append the compliance to the losses list
                 losses_list.append(float(value))
-            if frames_list is not None:
-                density = parameterization.to_density(x)
+            if frames_list is not None: # If the frames list is not None then append the density to the frames list
+                density = parameterization.to_density(x) # Forward pass through the network to get the density
                 frames_list.append(density.copy())
 
-                step = len(frames_list)
+                step = len(frames_list) # Get the step number
 
                 # Record checkpoint compliance
-                if checkpoints and step in checkpoints:
+                if checkpoints and step in checkpoints: # If the checkpoints list is not None and the step is in the checkpoints list then append the compliance to the checkpoint losses dictionary    
                     checkpoint_losses[step] = float(value)
 
-                if step % print_every == 0:
+                if step % print_every == 0: # If the step is divisible by print_every then print the step, compliance, and time
                     print(f"  Step {step:4d}  |  compliance: {value:.4e}  |  "
                           f"t = {time.time() - dt:.1f}s")
 
@@ -105,17 +105,17 @@ def run_mma(parameterization, args, opt_steps=80, print_every=10, checkpoints=No
         return wrapper
 
     # ── Set up NLopt ──────────────────────────────────────────────────────────
-    opt = nlopt.opt(nlopt.LD_MMA, n_params)
+    opt = nlopt.opt(nlopt.LD_MMA, n_params) # Create an NLopt optimizer
 
     # Bounds: densities must stay in [0, 1]
-    opt.set_lower_bounds(np.full(n_params, 0.0))
-    opt.set_upper_bounds(np.full(n_params, 1.0))
+    opt.set_lower_bounds(np.full(n_params, 0.0)) # Set the lower bounds to 0
+    opt.set_upper_bounds(np.full(n_params, 1.0)) # Set the upper bounds to 1
 
     # Minimize compliance (objective function)
     opt.set_min_objective(wrap_autograd(objective_fn, losses, frames))
 
     # Volume inequality constraint (with tolerance 1e-8)
-    opt.add_inequality_constraint(wrap_autograd(constraint_fn), 1e-8)
+    opt.add_inequality_constraint(wrap_autograd(constraint_fn), 1e-8) # Add the volume inequality constraint to the optimizer
 
     opt.set_maxeval(opt_steps + 1)
 

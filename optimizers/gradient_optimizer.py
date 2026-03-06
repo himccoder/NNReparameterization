@@ -29,10 +29,10 @@ def _compliance_torch(density_np, args):
     Compute compliance as a float (for logging, not differentiation).
     Calls the numpy/autograd-based objective.
     """
-    return float(objective(density_np.ravel(), args, use_filter=True))
+    return float(objective(density_np.ravel(), args, use_filter=True)) 
 
 
-def run_gradient_optimizer(
+def run_gradient_optimizer( # CONDITION I/J/K: optimize CNN weights, z is fixed
     parameterization,
     args,
     optimizer_type="adam",
@@ -72,14 +72,14 @@ def run_gradient_optimizer(
         frames: list of density arrays at each step
         checkpoint_losses: dict mapping step → compliance
     """
-    x0 = parameterization.initial_params()
+    x0 = parameterization.initial_params() # Get the initial parameters
 
     # Optimization variable: flat parameter vector as a torch tensor
-    params = torch.tensor(x0, dtype=torch.float32, requires_grad=True)
+    params = torch.tensor(x0, dtype=torch.float32, requires_grad=True) # Create a torch tensor from the initial parameters
 
     # ── Optimizer setup ───────────────────────────────────────────────────────
     if optimizer_type == "adam":
-        optimizer = optim.Adam([params], lr=lr)
+        optimizer = optim.Adam([params], lr=lr) # Create an Adam optimizer
     elif optimizer_type == "lbfgs":
         optimizer = optim.LBFGS(
             [params],
@@ -89,23 +89,23 @@ def run_gradient_optimizer(
             line_search_fn="strong_wolfe",
         )
     else:
-        raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+        raise ValueError(f"Unknown optimizer type: {optimizer_type}") # If the optimizer type is not known, raise an error
 
     losses, frames = [], []
     checkpoint_losses = {}
     dt = time.time()
 
-    print(f"  Running {optimizer_type.upper()} for {opt_steps} steps "
-          f"on {len(x0)} parameters...")
+    print(f"  Running {optimizer_type.upper()} for {opt_steps} steps " 
+          f"on {len(x0)} parameters...") # Print the optimizer type and the number of parameters
 
-    for step in range(1, opt_steps + 1):
+    for step in range(1, opt_steps + 1): # Loop through the optimizer steps
 
         def closure():
             """
             Closure required by L-BFGS (also works for Adam).
             Computes loss and populates param.grad.
             """
-            optimizer.zero_grad()
+            optimizer.zero_grad() # Zero out the gradients of the parameters
 
             # Get density from parameterization (numpy array)
             params_np = params.detach().cpu().numpy()
@@ -115,20 +115,20 @@ def run_gradient_optimizer(
             import autograd
             import autograd.numpy as anp
 
-            def compliance_from_density(x):
-                return objective(x, args, use_filter=True)
+            def compliance_from_density(x): 
+                return objective(x, args, use_filter=True) # Compute the compliance from the density    
 
-            compliance_val, compliance_grad = autograd.value_and_grad(
+            compliance_val, compliance_grad = autograd.value_and_grad( # Compute the compliance and the gradient of the compliance with respect to the density
                 compliance_from_density
             )(density_np.ravel())
 
             # ── Volume penalty ────────────────────────────────────────────────
-            mean_d = float(mean_density(density_np.ravel(), args))
-            volume_violation = max(0.0, mean_d - args.density)
-            penalty_val = volume_penalty * volume_violation ** 2
+            mean_d = float(mean_density(density_np.ravel(), args)) # Compute the mean density
+            volume_violation = max(0.0, mean_d - args.density) # Compute the volume violation
+            penalty_val = volume_penalty * volume_violation ** 2 # Compute the penalty value
 
             # Gradient of penalty w.r.t. density (subgradient)
-            if volume_violation > 0:
+            if volume_violation > 0: # If the volume violation is greater than 0 then compute the gradient of the penalty with respect to the density
                 # d(penalty)/d(mean_density) * d(mean_density)/d(density[i])
                 # = 2λ * violation * (1/n_elements)
                 penalty_grad_density = (
@@ -136,15 +136,15 @@ def run_gradient_optimizer(
                     / density_np.size
                     * np.ones_like(density_np.ravel())
                 )
-            else:
-                penalty_grad_density = np.zeros(density_np.size)
+            else: # If the volume violation is less than or equal to 0 then set the gradient of the penalty with respect to the density to 0
+                penalty_grad_density = np.zeros(density_np.size) # Set the gradient of the penalty with respect to the density to 0
 
-            total_grad_density = compliance_grad + penalty_grad_density
+            total_grad_density = compliance_grad + penalty_grad_density # Compute the total gradient of the density
 
             # ── Bridge: density gradient → parameter gradient ─────────────────
             # We use a custom torch Function to pass the numpy gradient back
             # into the torch autograd graph.
-            density_torch = _NumpyDensityFunction.apply(
+            density_torch = _NumpyDensityFunction.apply( # Apply the numpy density function to the parameters, the parameterization, and the total gradient of the density
                 params,
                 parameterization,
                 torch.tensor(total_grad_density.reshape(density_np.shape), dtype=torch.float32),
@@ -202,53 +202,53 @@ def _compute_param_grad(params_np, density_grad_np, parameterization):
     we use a vector-Jacobian product approximation via torch autograd.
     """
     # For NN parameterizations with torch support, use torch autograd
-    if hasattr(parameterization, "to_density_with_grad"):
+    if hasattr(parameterization, "to_density_with_grad"): # If the parameterization has a to_density_with_grad method
         try:
             params_tensor = torch.tensor(
-                params_np, dtype=torch.float32, requires_grad=True
+                params_np, dtype=torch.float32, requires_grad=True # Create a torch tensor from the parameters
             )
-            density = parameterization.to_density_with_grad(params_np)
+            density = parameterization.to_density_with_grad(params_np) # Forward pass through the network to get the density
 
-            if isinstance(density, torch.Tensor) and density.requires_grad:
+            if isinstance(density, torch.Tensor) and density.requires_grad: # If the density is a torch tensor and requires grad
                 density_grad_tensor = torch.tensor(
-                    density_grad_np.reshape(density.shape), dtype=torch.float32
+                    density_grad_np.reshape(density.shape), dtype=torch.float32 # Reshape the density gradient to the shape of the density
                 )
-                density.backward(density_grad_tensor)
-                if params_tensor.grad is not None:
-                    return params_tensor.grad.cpu().numpy()
-        except Exception:
+                density.backward(density_grad_tensor) # Backward pass through the network to get the gradients of the trainable parameters
+                if params_tensor.grad is not None: # If the gradients of the trainable parameters are not None
+                    return params_tensor.grad.cpu().numpy() # Return the gradients of the trainable parameters
+        except Exception: # If an error occurs, pass
             pass
 
-    # For torch-based parameterizations, compute VJP through the network
-    if hasattr(parameterization, "model"):
+    # For torch-based parameterizations, compute VJP through the network, VJP = Jacobian-Vector Product
+    if hasattr(parameterization, "model"): # If the parameterization has a model
         try:
             import torch.nn as nn
             # Collect all trainable parameters
-            if parameterization.frozen:
-                trainable = [parameterization.z]
-            else:
-                trainable = list(parameterization.model.parameters())
+            if parameterization.frozen: # CONDITION L: Freeze all CNN weights.
+                trainable = [parameterization.z] # Collect the frozen parameters
+            else: # Conditions I/J/K: optimize CNN weights, z is fixed
+                trainable = list(parameterization.model.parameters()) # Collect the trainable parameters
 
-            for p in trainable:
-                if p.grad is not None:
+            for p in trainable: # Zero out the gradients of the trainable parameters
+                if p.grad is not None: # If the gradients of the trainable parameters are not None
                     p.grad.zero_()
 
-            density = parameterization.to_density_with_grad(params_np)
+            density = parameterization.to_density_with_grad(params_np) # Forward pass through the network to get the density
             if isinstance(density, torch.Tensor):
                 grad_out = torch.tensor(
-                    density_grad_np.reshape(density.shape), dtype=torch.float32
+                    density_grad_np.reshape(density.shape), dtype=torch.float32 # Reshape the density gradient to the shape of the density
                 )
-                density.backward(grad_out)
+                density.backward(grad_out) # Backward pass through the network to get the gradients of the trainable parameters
 
                 grad_list = []
-                for p in trainable:
+                for p in trainable: # Collect the gradients of the trainable parameters
                     if p.grad is not None:
-                        grad_list.append(p.grad.cpu().numpy().ravel())
+                        grad_list.append(p.grad.cpu().numpy().ravel()) # Collect the gradients of the trainable parameters
                     else:
                         grad_list.append(np.zeros(p.numel()))
-                return np.concatenate(grad_list)
+                return np.concatenate(grad_list) # Concatenate the gradients of the trainable parameters
         except Exception as e:
-            pass
+            pass # If an error occurs, pass 
 
     # Fallback: finite differences (slow but always correct)
     eps = 1e-5
@@ -260,13 +260,13 @@ def _compute_param_grad(params_np, density_grad_np, parameterization):
     n_probes = min(n, 100)  # limit finite difference probes
     indices = np.random.choice(n, size=n_probes, replace=False)
 
-    for i in indices:
+    for i in indices: 
         params_plus = params_np.copy()
-        params_plus[i] += eps
-        density_plus = parameterization.to_density(params_plus).ravel()
-        density_base = parameterization.to_density(params_np).ravel()
-        jacobian_col = (density_plus - density_base) / eps
-        grad[i] = np.dot(density_flat, jacobian_col)
+        params_plus[i] += eps # Add epsilon to the parameter at the index
+        density_plus = parameterization.to_density(params_plus).ravel() # Forward pass through the network to get the density
+        density_base = parameterization.to_density(params_np).ravel() # Forward pass through the network to get the density. .ravel() is used to flatten the density to a 1D array
+        jacobian_col = (density_plus - density_base) / eps # Compute the Jacobian column
+        grad[i] = np.dot(density_flat, jacobian_col) # Compute the gradient
 
     return grad
 
@@ -277,11 +277,11 @@ class _NumpyDensityFunction(torch.autograd.Function):
     back into the torch computational graph.
     """
     @staticmethod
-    def forward(ctx, params, parameterization, density_grad):
-        ctx.save_for_backward(density_grad)
+    def forward(ctx, params, parameterization, density_grad): # Forward pass through the network to get the density
+        ctx.save_for_backward(density_grad) # Save the density gradient for the backward pass
         return params  # passthrough
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output): # Backward pass through the network to get the gradients of the trainable parameters
         density_grad, = ctx.saved_tensors
-        return density_grad, None, None
+        return density_grad, None, None # Return the density gradient and None for the backward pass

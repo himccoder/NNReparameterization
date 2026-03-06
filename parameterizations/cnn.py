@@ -99,23 +99,23 @@ class UNetCNN(nn.Module):
 
         # ── Decoder ──────────────────────────────────────────────────────────
         # Upsampling + optional skip connections
-        skip3_in = c*4 if use_skip_connections else 0
-        skip2_in = c*2 if use_skip_connections else 0
-        skip1_in = c   if use_skip_connections else 0
+        skip3_in = c*4 if use_skip_connections else 0 # If the skip connections are used then the input channels for the third decoder block are the number of channels in the fourth encoder block
+        skip2_in = c*2 if use_skip_connections else 0 # If the skip connections are used then the input channels for the second decoder block are the number of channels in the third encoder block
+        skip1_in = c   if use_skip_connections else 0 # If the skip connections are used then the input channels for the first decoder block are the number of channels in the second encoder block
 
-        self.up3  = nn.ConvTranspose2d(c*8, c*4, 2, stride=2)
-        self.dec3 = ConvBlock(c*4 + skip3_in, c*4)
+        self.up3  = nn.ConvTranspose2d(c*8, c*4, 2, stride=2) # Transpose convolution to upsample the third decoder block
+        self.dec3 = ConvBlock(c*4 + skip3_in, c*4) # Convolution block to decode the third decoder block
 
-        self.up2  = nn.ConvTranspose2d(c*4, c*2, 2, stride=2)
-        self.dec2 = ConvBlock(c*2 + skip2_in, c*2)
+        self.up2  = nn.ConvTranspose2d(c*4, c*2, 2, stride=2) # Transpose convolution to upsample the second decoder block
+        self.dec2 = ConvBlock(c*2 + skip2_in, c*2) # Convolution block to decode the second decoder block
 
-        self.up1  = nn.ConvTranspose2d(c*2, c, 2, stride=2)
-        self.dec1 = ConvBlock(c + skip1_in, c)
+        self.up1  = nn.ConvTranspose2d(c*2, c, 2, stride=2) # Transpose convolution to upsample the first decoder block
+        self.dec1 = ConvBlock(c + skip1_in, c) # Convolution block to decode the first decoder block
 
         # Final 1×1 conv to produce single-channel density, sigmoid to [0,1]
         self.final = nn.Sequential(
-            nn.Conv2d(c, 1, 1),
-            nn.Sigmoid(),
+            nn.Conv2d(c, 1, 1), # Convolution to produce the final density field
+            nn.Sigmoid(), # Sigmoid activation function to ensure the density field is in the range [0, 1]
         )
 
     def forward(self, z):
