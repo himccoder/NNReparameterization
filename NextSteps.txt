@@ -1,0 +1,157 @@
+
+Some ideas I had earlier for next steps (but I don't recall it clearly)
+1. Adam with constraints, how can we force adam to obey constraints. 
+2. Focus on CNN architectures 
+3. Try performative without Adam(weaker optimizer)
+
+
+
+So far we observed the first experiment concluded CNNs architecture converged fastest: 
+- CNN + Adam beats Direct Density + Adam 
+- Although Fourier MLP + Adam and SIREN + Adam performed better in mbb beam than their performance in causeway bridge they still lost to CNNs as CNNs converged faster. 
+It's pretty clear that certain combinations performed better in certain problem contexts, however CNNs remained consistent and converged the fastest in both bridge and mbb beam,
+as a result it makes it worth to further dive deeper into CNNs and best optimizer. 
+
+
+
+─────────────────────────────────────────────────────────────────────
+QUESTION ANSWERS
+─────────────────────────────────────────────────────────────────────
+
+Q: What do we mean by frozen CNN weights? What do we mean by only optimize
+   latent input? What is the difference between latent input z and x?
+
+A: In MLP-based methods (Conditions E–H), the input `x` is the spatial
+   coordinate grid: every finite element is given its (row, col) position
+   and the MLP maps those coordinates → density values. The MLP uses `x`
+   as a fixed, structured input.
+
+   In CNN methods the input is called `z` — a fixed random noise tensor of
+   shape (1, 1, H, W), one value per element, initialized once from a
+   random seed.  It is NOT coordinates; think of it as a random "fingerprint"
+   that seeds the CNN.
+
+   Normally (Conditions I/J/K) the CNN's learned filters and biases (its
+   "weights" W) are what get updated by the optimizer. `z` stays fixed.
+   The CNN maps z → W → density field.
+
+   "Frozen weights" (Condition L) flips this: W is fixed at its random
+   initialization and never updated. Instead, `z` itself is the optimization
+   variable — gradient descent nudges the input noise until the density that
+   comes out of the frozen CNN is a good structural design.
+
+   Why does this matter? If a frozen CNN (with purely random, untrained
+   weights) still produces better results than direct density optimization,
+   it means the benefit of CNNs comes entirely from the ARCHITECTURE — the
+   way convolutions wire elements together — not from any learning that
+   happens during optimization. This is Hypothesis H6 (the "killer" test).
+
+   Summary:
+     x   = coordinate grid used as input by MLPs
+     z   = random noise tensor used as input by CNNs (not coordinates)
+     W   = CNN filter weights (optimized in I/J/K, frozen in L)
+     Frozen = W is fixed; only z changes during optimization
+
+
+Q: What is a Gaussian filter?
+
+A: A Gaussian filter is a spatial smoothing operation applied to the density
+   field before passing it to the physics solver.  Each element's density
+   is replaced by a weighted average of its neighbours, where the weights
+   follow a 2D Gaussian bell curve (nearer neighbours receive more weight).
+
+   Effect: blurs sharp edges and suppresses checkerboard artifacts, so the
+   density field is smoother and more physically printable.
+
+   In Experiment 1, Condition D applied a wider Gaussian filter (filter_width=3)
+   to the direct density parameterization and ran it with MMA. The question
+   was: can smoothing alone (without any neural network) explain the CNN's
+   advantage?  The answer was no — Condition D did not match Condition I's
+   performance, meaning the CNN provides something beyond mere smoothing.
+
+   Relevant config entry: PHYSICS["filter_width"] in config.py.
+
+
+Q: What do we mean by the spatial inductive bias of a CNN? What is it about
+   CNNs that helps us optimize better?
+
+A: An "inductive bias" is a structural assumption baked into the model
+   architecture that makes certain solutions easier to find.
+
+   For CNNs, the key structural properties are:
+
+   1. Local connectivity — each output element depends only on a small
+      neighbourhood in the input (the receptive field of a conv filter).
+      This means the CNN physically cannot produce isolated, disconnected
+      material patches; nearby elements are always correlated.
+
+   2. Weight sharing (translation equivariance) — the same filter is
+      applied at every spatial location.  The CNN uses the same "feature
+      detector" everywhere in the design domain, so it naturally produces
+      designs with repeating, consistent structural motifs (struts, arches)
+      rather than noise.
+
+   3. Multi-scale structure (U-Net) — the encoder progressively
+      downsamples, forcing the network to model global structure at the
+      bottleneck. The decoder then refines detail back to full resolution,
+      with skip connections passing fine-grained spatial information across.
+      This means the CNN simultaneously optimizes coarse layout AND local
+      geometry in a single forward pass.
+
+   This is fundamentally different from an MLP, which treats every element
+   independently given its coordinates. The MLP has no knowledge of which
+   elements are adjacent.
+
+   In structural optimization specifically, a good solution is always
+   smooth and spatially coherent (connected load paths, no floating
+   material). The CNN's inductive bias makes these solutions the "natural"
+   output, so the optimizer finds them faster and more reliably.
+
+
+Q: L-BFGS actually takes too long on my laptop. Why is it effective in
+   theory? Do I need to consider it here?
+
+A: L-BFGS (Limited-memory Broyden–Fletcher–Goldfarb–Shanno) is a
+   quasi-Newton method.  While Adam only tracks first-order gradient
+   information (direction + per-parameter scale), L-BFGS approximates the
+   inverse Hessian — the curvature of the loss landscape — using the last
+   20 gradient vectors.
+
+   Why this helps: curvature information tells the optimizer how "wide" or
+   "narrow" the loss bowl is in each direction, allowing much larger, better-
+   aimed steps. In theory it converges in far fewer iterations than Adam.
+
+   Why it is slow on a laptop:
+     - Each step requires a line search (multiple forward passes to find
+       a step size satisfying the Wolfe conditions).
+     - Memory scales as O(m × n_params), where m=20 and n_params can be
+       100 000+ for a CNN. This is heavy on RAM and CPU.
+     - The physics FEM solve is already expensive; multiplying it by 5–10×
+       per step makes L-BFGS prohibitively slow on consumer hardware.
+
+   Verdict for Experiment 2: Skip L-BFGS for CNN conditions. It is most
+   useful when n_params is small (Condition C runs direct density with only
+   ~2 000 parameters and L-BFGS is tractable there).  For CNN-scale
+   problems, Adam, AdamW, SGD+momentum, and RMSprop are the realistic
+   choices and are what Experiment 2 will test.
+
+
+Q: We can try a U-Net style CNN — is that worth it?
+
+A: We already have a U-Net as the reference architecture (Condition I).
+   Experiment 2 extends this directly by testing shallower U-Nets (2
+   encoder levels), deeper U-Nets (4 levels), smaller/larger channel
+   counts, and a plain CNN without BatchNorm. This gives a cleaner read on
+   exactly which U-Net properties matter, rather than simply asking
+   "is U-Net worth it?" (we already know the answer is yes from Exp 1).
+
+─────────────────────────────────────────────────────────────────────
+
+
+Next experiment: CNN works the best, so we now need to dive deeper as to what about CNNs work the best. We can try a variety of types of CNNs for each of the problems 
+We also want to see which optimizers pairs the best with CNN. 
+This can help us conclude what properties of the architecture/optimizer yield best performance and why? The performance probably varies based on problem context, but we need to verify that and see how much of an impact does the type of structural problem
+actually have on the CNN + optimizer.
+
+→ See experiment_2_cnn_deep_dive/ for the implementation.
+  Run with: python experiment_2_cnn_deep_dive/run_experiment.py
